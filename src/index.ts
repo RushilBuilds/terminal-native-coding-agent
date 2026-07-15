@@ -2,15 +2,9 @@
 /**
  * Entry point for the terminal-native coding agent.
  *
- * Day 1: this only points at the `ask` smoke-test CLI. The Ink TUI and full
- * plan/act/observe/recover loop land on Day 2+ and will be launched from here.
+ * Launches the interactive Ink TUI (plan / activity / budget split-view). The full
+ * plan → act → observe → recover loop is wired in behind the same interface from Day 4.
  */
-process.stderr.write(
-  `${[
-    "terminal-native-coding-agent",
-    "",
-    "The interactive TUI arrives on Day 2. For now, try a single round-trip:",
-    '  bun run ask "say hi"',
-    "",
-  ].join("\n")}\n`,
-);
+import { startTui } from "./tui/run.tsx";
+
+await startTui();
