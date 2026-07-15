@@ -1,0 +1,30 @@
+{
+  "name": "terminal-native-coding-agent",
+  "version": "0.1.0",
+  "description": "A terminal-native AI coding agent built from scratch — plan/act/observe/recover loop, MCP tools, sandboxed execution, hooks, and hard cost ceilings.",
+  "type": "module",
+  "module": "src/index.ts",
+  "bin": {
+    "tnca": "src/index.ts"
+  },
+  "scripts": {
+    "ask": "bun run src/cli/ask.ts",
+    "start": "bun run src/index.ts",
+    "typecheck": "tsc --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "trustedDependencies": ["@biomejs/biome"]
+}
