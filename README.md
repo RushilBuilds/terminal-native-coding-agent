@@ -79,9 +79,14 @@ cp .env.example .env
 
 # 4. Smoke-test the model round-trip
 bun run ask "explain the plan/act/observe/recover loop in one paragraph"
+
+# 5. Launch the interactive TUI (plan / activity / budget split-view)
+bun run start
 ```
 
-The interactive TUI (`bun run start`) arrives on Day 2.
+`bun run start` opens the split-view terminal UI: type a task at the `❯` prompt, watch it
+stream into the activity pane, and press Ctrl-C to cancel an in-flight turn (or exit when idle).
+The live model + tool loop is wired in behind this same interface from Day 4.
 
 ## Configuration
 
@@ -110,7 +115,7 @@ bun test            # unit tests
 Built one phase per day. Checked = landed.
 
 - [x] **Day 1 — Foundations:** Bun scaffold, config + model registry, streaming OpenRouter client, `ask` smoke test.
-- [ ] **Day 2 — TUI scaffold:** Ink split-view (plan / tools / budget) + input & cancellation.
+- [x] **Day 2 — TUI scaffold:** Ink split-view (plan / activity / budget) + prompt input & Ctrl-C cancellation.
 - [ ] **Day 3 — Plan state:** typed TodoWrite state + crash journal & resume.
 - [ ] **Day 4 — Tools over MCP:** six core tools + output truncation.
 - [ ] **Day 5 — Sandbox:** git-worktree isolation for edits & execution.
