@@ -1,10 +1,14 @@
 /**
- * Agent loop — Day 2 stub.
+ * Agent loop — Day 3 stub.
  *
  * The real plan → act → observe → recover loop (with live model calls and MCP tools)
- * lands from Day 4. For now this drives the TUI with a believable turn so the panes,
- * input, and cancellation can be built and demoed against a stable interface.
+ * lands from Day 4. For now this drives the TUI with a believable turn — including a
+ * plan it rewrites as it "works" — so the panes, journaling, and cancellation can be
+ * built and demoed against a stable interface.
  */
+import { type Plan, createPlan, withStatus } from "./plan.ts";
+
+export type { Plan, TodoItem, TodoStatus } from "./plan.ts";
 
 export type ActivityKind = "user" | "system" | "tool" | "error";
 
@@ -12,14 +16,6 @@ export interface ActivityEntry {
   id: number;
   kind: ActivityKind;
   text: string;
-}
-
-export type TodoStatus = "pending" | "active" | "done";
-
-export interface TodoItem {
-  id: number;
-  text: string;
-  status: TodoStatus;
 }
 
 export interface Budget {
@@ -30,9 +26,10 @@ export interface Budget {
 
 export const INITIAL_BUDGET: Budget = { turns: 0, tokens: 0, usd: 0 };
 
-/** Callbacks the TUI supplies so the loop can stream updates into the panes. */
+/** Callbacks the TUI supplies so the loop can stream updates into the panes + journal. */
 export interface LoopHandlers {
   onActivity: (kind: ActivityKind, text: string) => void;
+  onPlan: (plan: Plan) => void;
 }
 
 /** Raised when a turn is cancelled via the abort signal. */
@@ -40,9 +37,18 @@ export class CancelledError extends Error {
   override name = "CancelledError";
 }
 
+/** The steps the stub "plans" for any task (a real plan comes from the model on Day 4). */
+const STUB_STEPS = [
+  "Understand the request",
+  "Search the codebase",
+  "Make the change",
+  "Verify the result",
+];
+
 /**
- * Run one stubbed turn. Emits a few activity lines with small delays so the TUI shows a
- * live "running" state that Ctrl-C can actually cancel. Resolves when the turn completes.
+ * Run one stubbed turn: draft a plan, then walk it step by step (pending → active → done),
+ * emitting a fresh plan on every transition so the TUI + journal can track progress. Delays
+ * keep the "running" state alive long enough for Ctrl-C to cancel it. Resolves when done.
  */
 export async function runStubTurn(
   prompt: string,
@@ -50,12 +56,23 @@ export async function runStubTurn(
   signal?: AbortSignal,
 ): Promise<void> {
   handlers.onActivity("user", prompt);
-  await delay(250, signal);
+
+  let plan: Plan = createPlan(STUB_STEPS);
+  handlers.onPlan(plan);
+  await delay(150, signal);
   handlers.onActivity("system", "planning the task…");
-  await delay(400, signal);
+
+  for (const item of plan) {
+    plan = withStatus(plan, item.id, "active");
+    handlers.onPlan(plan);
+    await delay(140, signal);
+    plan = withStatus(plan, item.id, "done");
+    handlers.onPlan(plan);
+  }
+
   handlers.onActivity(
     "system",
-    "live model + MCP tool loop arrive on Day 4 — echoing your prompt for now.",
+    "live model + MCP tool loop arrive on Day 4 — this plan was stubbed for now.",
   );
 }
 
