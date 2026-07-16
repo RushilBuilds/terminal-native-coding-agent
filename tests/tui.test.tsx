@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { render } from "ink-testing-library";
+import { SessionJournal } from "../src/agent/journal.ts";
+import { createPlan } from "../src/agent/plan.ts";
 import { App } from "../src/tui/App.tsx";
 
 const CEILINGS = { maxTurns: 50, maxTokens: 200_000, maxUsd: 5 };
@@ -7,9 +12,20 @@ const CEILINGS = { maxTurns: 50, maxTokens: 200_000, maxUsd: 5 };
 /** Small helper: wait a tick so async state updates flush into the next frame. */
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
+let dir: string;
+let journal: SessionJournal;
+
+beforeEach(() => {
+  dir = mkdtempSync(join(tmpdir(), "tnca-tui-"));
+  journal = new SessionJournal(dir);
+});
+afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
 describe("App (TUI scaffold)", () => {
   test("renders the three panes and their empty states", () => {
-    const { lastFrame } = render(<App modelLabel="Test Model" ceilings={CEILINGS} />);
+    const { lastFrame } = render(
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+    );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("PLAN");
     expect(frame).toContain("ACTIVITY");
@@ -19,7 +35,9 @@ describe("App (TUI scaffold)", () => {
   });
 
   test("shows the model label and per-task ceilings", () => {
-    const { lastFrame } = render(<App modelLabel="Test Model" ceilings={CEILINGS} />);
+    const { lastFrame } = render(
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+    );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Test Model");
     expect(frame).toContain("50"); // max turns
@@ -27,24 +45,52 @@ describe("App (TUI scaffold)", () => {
     expect(frame).toContain("$5.00"); // max spend
   });
 
-  test("echoes a submitted prompt into the activity pane", async () => {
-    const { stdin, lastFrame } = render(<App modelLabel="Test Model" ceilings={CEILINGS} />);
+  test("echoes a submitted prompt and walks the plan to completion", async () => {
+    const { stdin, lastFrame } = render(
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+    );
     stdin.write("hello world");
     await tick(5);
     expect(lastFrame() ?? "").toContain("hello world");
 
     stdin.write("\r"); // Enter → submit
-    await tick(900); // let the stub turn finish its delayed lines
+    await tick(1200); // let the stub turn finish walking the plan
     const frame = lastFrame() ?? "";
     expect(frame).toContain("hello world"); // user line in the log
     expect(frame).toContain("Day 4"); // stub system line
+    expect(frame).toContain("4/4"); // plan progress: all steps done
+    // The session was journalled and completed (no longer resumable).
+    expect(new SessionJournal(dir).latestResumable()).toBeNull();
+  });
+
+  test("restores a recovered session's plan on launch", async () => {
+    const crashed = journal.start("half-finished task");
+    journal.update(crashed, { plan: createPlan(["step A", "step B"]) });
+
+    const initialSession = journal.latestResumable();
+    const { lastFrame } = render(
+      <App
+        modelLabel="Test Model"
+        ceilings={CEILINGS}
+        journal={journal}
+        initialSession={initialSession}
+      />,
+    );
+    await tick(10);
+    const frame = lastFrame() ?? "";
+    expect(frame).toContain("step A"); // restored plan rendered
+    expect(frame).toContain("step B");
+    expect(frame).toContain("resumed"); // banner + activity note
+    expect(frame).toContain(crashed.id);
   });
 
   test("backspace edits the prompt buffer", async () => {
-    const { stdin, lastFrame } = render(<App modelLabel="Test Model" ceilings={CEILINGS} />);
+    const { stdin, lastFrame } = render(
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+    );
     stdin.write("abc");
     await tick(5);
-    stdin.write(""); // DEL / backspace
+    stdin.write(""); // DEL → backspace
     await tick(5);
     const frame = lastFrame() ?? "";
     expect(frame).toContain("ab");

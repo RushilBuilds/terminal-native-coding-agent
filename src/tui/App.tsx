@@ -1,12 +1,13 @@
 import { Box, Text, useApp, useInput } from "ink";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { Session, SessionJournal } from "../agent/journal.ts";
 import {
   type ActivityEntry,
   type ActivityKind,
   type Budget,
   CancelledError,
   INITIAL_BUDGET,
-  type TodoItem,
+  type Plan,
   runStubTurn,
 } from "../agent/loop.ts";
 import { PromptInput } from "./PromptInput.tsx";
@@ -17,52 +18,86 @@ import { PlanPane } from "./panes/PlanPane.tsx";
 export interface AppProps {
   modelLabel: string;
   ceilings: Ceilings;
+  journal: SessionJournal;
+  /** A crashed-and-recovered session to restore on launch, if any. */
+  initialSession?: Session | null;
 }
 
 /**
  * Root TUI component: the plan / activity / budget split-view plus the prompt.
- * Day 2 wires it to a stub turn; the real loop swaps in behind the same interface later.
+ *
+ * Owns the session lifecycle: each turn opens a journalled session, every plan change is
+ * persisted, and completion/exit marks it done. A session recovered from a crash restores
+ * its plan on launch (Day 3). The real loop swaps in behind this same interface on Day 4.
  */
-export function App({ modelLabel, ceilings }: AppProps) {
+export function App({ modelLabel, ceilings, journal, initialSession }: AppProps) {
   const { exit } = useApp();
   const [text, setText] = useState("");
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
-  const [plan] = useState<TodoItem[]>([]);
+  const [plan, setPlan] = useState<Plan>(initialSession?.plan ?? []);
   const [budget, setBudget] = useState<Budget>(INITIAL_BUDGET);
   const [running, setRunning] = useState(false);
+  const [resumedFrom, setResumedFrom] = useState<string | null>(initialSession?.id ?? null);
 
   const nextId = useRef(0);
   const abortRef = useRef<AbortController | null>(null);
+  const sessionRef = useRef<Session | null>(initialSession ?? null);
 
   const pushActivity = useCallback((kind: ActivityKind, textLine: string) => {
     setActivity((prev) => [...prev, { id: nextId.current++, kind, text: textLine }]);
   }, []);
 
+  // Surface a one-line note about the restored session.
+  useEffect(() => {
+    if (initialSession) {
+      pushActivity("system", `resumed session ${initialSession.id} — "${initialSession.task}"`);
+    }
+  }, [initialSession, pushActivity]);
+
   const submit = useCallback(() => {
     const prompt = text.trim();
     if (!prompt || running) return;
     setText("");
+    setResumedFrom(null);
+
+    // Close out any recovered session we were just viewing, then open a fresh one.
+    if (sessionRef.current?.status === "active") journal.complete(sessionRef.current);
+    const session = journal.start(prompt);
+    sessionRef.current = session;
+    setPlan([]);
+
     const controller = new AbortController();
     abortRef.current = controller;
     setRunning(true);
 
-    runStubTurn(prompt, { onActivity: pushActivity }, controller.signal)
+    const onPlan = (next: Plan) => {
+      setPlan(next);
+      if (sessionRef.current)
+        sessionRef.current = journal.update(sessionRef.current, { plan: next });
+    };
+
+    runStubTurn(prompt, { onActivity: pushActivity, onPlan }, controller.signal)
       .then(() => setBudget((b) => ({ ...b, turns: b.turns + 1 })))
       .catch((err) => {
         if (err instanceof CancelledError) pushActivity("error", "cancelled.");
         else pushActivity("error", err instanceof Error ? err.message : String(err));
       })
       .finally(() => {
+        if (sessionRef.current) sessionRef.current = journal.complete(sessionRef.current);
         setRunning(false);
         abortRef.current = null;
       });
-  }, [text, running, pushActivity]);
+  }, [text, running, pushActivity, journal]);
 
   useInput((input, key) => {
     // Ctrl-C: cancel an in-flight turn, or exit when idle.
     if (key.ctrl && input === "c") {
-      if (running && abortRef.current) abortRef.current.abort();
-      else exit();
+      if (running && abortRef.current) {
+        abortRef.current.abort();
+      } else {
+        if (sessionRef.current?.status === "active") journal.complete(sessionRef.current);
+        exit();
+      }
       return;
     }
     // While a turn runs, ignore editing keys (only Ctrl-C above is honored).
@@ -83,7 +118,11 @@ export function App({ modelLabel, ceilings }: AppProps) {
     <Box flexDirection="column">
       <Box justifyContent="space-between" paddingX={1}>
         <Text bold>terminal-native coding agent</Text>
-        <Text dimColor>● {modelLabel}</Text>
+        {resumedFrom ? (
+          <Text color="yellow">⟲ resumed {resumedFrom}</Text>
+        ) : (
+          <Text dimColor>● {modelLabel}</Text>
+        )}
       </Box>
 
       <Box flexDirection="row" minHeight={14}>

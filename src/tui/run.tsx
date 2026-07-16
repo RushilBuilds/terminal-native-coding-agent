@@ -1,4 +1,5 @@
 import { render } from "ink";
+import { SessionJournal } from "../agent/journal.ts";
 import { loadConfig } from "../config/index.ts";
 import { App } from "./App.tsx";
 import type { Ceilings } from "./panes/BudgetPane.tsx";
@@ -7,7 +8,8 @@ const DEFAULT_CEILINGS: Ceilings = { maxTurns: 50, maxTokens: 200_000, maxUsd: 5
 
 /**
  * Launch the interactive TUI. Reads config for the model label + ceilings but degrades
- * gracefully when it's missing (Day 2 renders without a live model). Requires a TTY.
+ * gracefully when it's missing (renders without a live model). Restores the plan from a
+ * session a previous run left mid-flight (crash recovery). Requires a TTY.
  */
 export async function startTui(): Promise<void> {
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
@@ -22,11 +24,20 @@ export async function startTui(): Promise<void> {
     modelLabel = config.model.label;
     ceilings = config.ceilings;
   } catch {
-    // No API key yet — fine for the Day 2 scaffold. The header shows "unconfigured".
+    // No API key yet — fine for the scaffold. The header shows "unconfigured".
   }
 
-  const { waitUntilExit } = render(<App modelLabel={modelLabel} ceilings={ceilings} />, {
-    exitOnCtrlC: false,
-  });
+  const journal = new SessionJournal();
+  const initialSession = journal.latestResumable();
+
+  const { waitUntilExit } = render(
+    <App
+      modelLabel={modelLabel}
+      ceilings={ceilings}
+      journal={journal}
+      initialSession={initialSession}
+    />,
+    { exitOnCtrlC: false },
+  );
   await waitUntilExit();
 }
