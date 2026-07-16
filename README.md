@@ -116,7 +116,7 @@ Built one phase per day. Checked = landed.
 
 - [x] **Day 1 — Foundations:** Bun scaffold, config + model registry, streaming OpenRouter client, `ask` smoke test.
 - [x] **Day 2 — TUI scaffold:** Ink split-view (plan / activity / budget) + prompt input & Ctrl-C cancellation.
-- [ ] **Day 3 — Plan state:** typed TodoWrite state + crash journal & resume.
+- [x] **Day 3 — Plan state:** zod-typed TodoWrite state, journaled to `.agent/session-*.json`, restored on restart after a crash.
 - [ ] **Day 4 — Tools over MCP:** six core tools + output truncation.
 - [ ] **Day 5 — Sandbox:** git-worktree isolation for edits & execution.
 - [ ] **Day 6 — Hooks:** lifecycle hooks + safety policies.
