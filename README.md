@@ -101,6 +101,24 @@ All configuration is via environment variables (see [`.env.example`](.env.exampl
 | `TNCA_MAX_TOKENS` | `200000` | Per-task token ceiling. |
 | `TNCA_MAX_USD` | `5` | Per-task dollar ceiling. |
 
+## Tools
+
+The agent reaches the codebase through six tools, served over **MCP StreamableHTTP** (`src/mcp`)
+and dispatched by the model in the act→observe loop. Every tool result passes through
+[output truncation](src/tools/truncate.ts) so one noisy command can't poison the context window.
+
+| Tool | What it does |
+| --- | --- |
+| `read_file` | Line-numbered file reads with optional line-range slicing. |
+| `edit_file` | Create/overwrite, or replace an exact (unique) string. |
+| `search_code` | ripgrep over the repo; results capped and made relative. |
+| `symbols` | tree-sitter outline (functions/classes/types) — 30+ languages. |
+| `run_command` | Sandboxed `bash -c` with a timeout and output cap. |
+| `git` | Allowlisted git subcommands (no destructive/remote ops). |
+
+Paths are contained to the working directory, and the model manages its own plan via an
+`update_plan` control tool. When no API key is set, the TUI runs an offline stub so it still works.
+
 ## Development
 
 ```bash
@@ -117,7 +135,7 @@ Built one phase per day. Checked = landed.
 - [x] **Day 1 — Foundations:** Bun scaffold, config + model registry, streaming OpenRouter client, `ask` smoke test.
 - [x] **Day 2 — TUI scaffold:** Ink split-view (plan / activity / budget) + prompt input & Ctrl-C cancellation.
 - [x] **Day 3 — Plan state:** zod-typed TodoWrite state, journaled to `.agent/session-*.json`, restored on restart after a crash.
-- [ ] **Day 4 — Tools over MCP:** six core tools + output truncation.
+- [x] **Day 4 — Tools over MCP:** six core tools on an MCP StreamableHTTP server, real model tool-calling in the act→observe loop, aggressive output truncation.
 - [ ] **Day 5 — Sandbox:** git-worktree isolation for edits & execution.
 - [ ] **Day 6 — Hooks:** lifecycle hooks + safety policies.
 - [ ] **Day 7 — Observability:** OTel GenAI spans + live token/cost accounting.
