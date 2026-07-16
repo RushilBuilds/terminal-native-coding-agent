@@ -8,7 +8,7 @@ import {
   CancelledError,
   INITIAL_BUDGET,
   type Plan,
-  runStubTurn,
+  type TurnRunner,
 } from "../agent/loop.ts";
 import { PromptInput } from "./PromptInput.tsx";
 import { ActivityPane } from "./panes/ActivityPane.tsx";
@@ -19,6 +19,8 @@ export interface AppProps {
   modelLabel: string;
   ceilings: Ceilings;
   journal: SessionJournal;
+  /** Runs one turn — the real model+MCP loop when configured, else the offline stub. */
+  runTurn: TurnRunner;
   /** A crashed-and-recovered session to restore on launch, if any. */
   initialSession?: Session | null;
 }
@@ -30,7 +32,7 @@ export interface AppProps {
  * persisted, and completion/exit marks it done. A session recovered from a crash restores
  * its plan on launch (Day 3). The real loop swaps in behind this same interface on Day 4.
  */
-export function App({ modelLabel, ceilings, journal, initialSession }: AppProps) {
+export function App({ modelLabel, ceilings, journal, runTurn, initialSession }: AppProps) {
   const { exit } = useApp();
   const [text, setText] = useState("");
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
@@ -76,7 +78,7 @@ export function App({ modelLabel, ceilings, journal, initialSession }: AppProps)
         sessionRef.current = journal.update(sessionRef.current, { plan: next });
     };
 
-    runStubTurn(prompt, { onActivity: pushActivity, onPlan }, controller.signal)
+    runTurn(prompt, { onActivity: pushActivity, onPlan }, controller.signal)
       .then(() => setBudget((b) => ({ ...b, turns: b.turns + 1 })))
       .catch((err) => {
         if (err instanceof CancelledError) pushActivity("error", "cancelled.");
@@ -87,7 +89,7 @@ export function App({ modelLabel, ceilings, journal, initialSession }: AppProps)
         setRunning(false);
         abortRef.current = null;
       });
-  }, [text, running, pushActivity, journal]);
+  }, [text, running, pushActivity, journal, runTurn]);
 
   useInput((input, key) => {
     // Ctrl-C: cancel an in-flight turn, or exit when idle.

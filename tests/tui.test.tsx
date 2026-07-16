@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { render } from "ink-testing-library";
 import { SessionJournal } from "../src/agent/journal.ts";
+import { runStubTurn } from "../src/agent/loop.ts";
 import { createPlan } from "../src/agent/plan.ts";
 import { App } from "../src/tui/App.tsx";
 
@@ -24,7 +25,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe("App (TUI scaffold)", () => {
   test("renders the three panes and their empty states", () => {
     const { lastFrame } = render(
-      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} runTurn={runStubTurn} />,
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("PLAN");
@@ -36,7 +37,7 @@ describe("App (TUI scaffold)", () => {
 
   test("shows the model label and per-task ceilings", () => {
     const { lastFrame } = render(
-      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} runTurn={runStubTurn} />,
     );
     const frame = lastFrame() ?? "";
     expect(frame).toContain("Test Model");
@@ -47,7 +48,7 @@ describe("App (TUI scaffold)", () => {
 
   test("echoes a submitted prompt and walks the plan to completion", async () => {
     const { stdin, lastFrame } = render(
-      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} runTurn={runStubTurn} />,
     );
     stdin.write("hello world");
     await tick(5);
@@ -57,7 +58,7 @@ describe("App (TUI scaffold)", () => {
     await tick(1200); // let the stub turn finish walking the plan
     const frame = lastFrame() ?? "";
     expect(frame).toContain("hello world"); // user line in the log
-    expect(frame).toContain("Day 4"); // stub system line
+    expect(frame).toContain("offline stub"); // stub system line
     expect(frame).toContain("4/4"); // plan progress: all steps done
     // The session was journalled and completed (no longer resumable).
     expect(new SessionJournal(dir).latestResumable()).toBeNull();
@@ -73,6 +74,7 @@ describe("App (TUI scaffold)", () => {
         modelLabel="Test Model"
         ceilings={CEILINGS}
         journal={journal}
+        runTurn={runStubTurn}
         initialSession={initialSession}
       />,
     );
@@ -86,7 +88,7 @@ describe("App (TUI scaffold)", () => {
 
   test("backspace edits the prompt buffer", async () => {
     const { stdin, lastFrame } = render(
-      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} />,
+      <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} runTurn={runStubTurn} />,
     );
     stdin.write("abc");
     await tick(5);
