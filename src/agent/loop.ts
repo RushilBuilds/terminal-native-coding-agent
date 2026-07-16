@@ -1,12 +1,15 @@
 /**
- * Agent loop — Day 3 stub.
+ * Agent loop.
  *
- * The real plan → act → observe → recover loop (with live model calls and MCP tools)
- * lands from Day 4. For now this drives the TUI with a believable turn — including a
- * plan it rewrites as it "works" — so the panes, journaling, and cancellation can be
- * built and demoed against a stable interface.
+ * `runAgentTurn` is the real plan → act → observe → recover loop: it drives a model through
+ * tool calls (over MCP) until the task is done or a safety cap trips, updating the plan and
+ * streaming activity as it goes. `runStubTurn` is the offline stand-in used when there's no
+ * API key configured, so the TUI still works and demos.
  */
-import { type Plan, createPlan, withStatus } from "./plan.ts";
+import { z } from "zod";
+import type { ChatMessage, ModelClient, ToolSpec } from "../model/types.ts";
+import { truncate } from "../tools/truncate.ts";
+import { type Plan, PlanSchema, createPlan, withStatus } from "./plan.ts";
 
 export type { Plan, TodoItem, TodoStatus } from "./plan.ts";
 
@@ -72,7 +75,7 @@ export async function runStubTurn(
 
   handlers.onActivity(
     "system",
-    "live model + MCP tool loop arrive on Day 4 — this plan was stubbed for now.",
+    "offline stub — set OPENROUTER_API_KEY to run the real model + tool loop.",
   );
 }
 
@@ -93,4 +96,148 @@ function delay(ms: number, signal?: AbortSignal): Promise<void> {
     };
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+// ─── Real agent loop ──────────────────────────────────────────────────────────
+
+/** A function that runs one turn against the panes — either the real loop or the stub. */
+export type TurnRunner = (
+  prompt: string,
+  handlers: LoopHandlers,
+  signal?: AbortSignal,
+) => Promise<void>;
+
+/** A tool the loop can dispatch (name + JSON-Schema params), plus how to call it. */
+export interface AgentTools {
+  specs: ToolSpec[];
+  call: (name: string, args: Record<string, unknown>) => Promise<string>;
+}
+
+export interface AgentDeps {
+  model: ModelClient;
+  tools: AgentTools;
+  handlers: LoopHandlers;
+  /** Safety cap on tool-calling rounds (full turn/token/$ ceilings arrive Day 8). */
+  maxRounds?: number;
+}
+
+const SYSTEM_PROMPT = `You are a terminal-native coding agent working inside the user's repository.
+Work in small steps using the provided tools:
+- Call update_plan whenever your plan changes, so the user can see your intent.
+- Explore with search_code and symbols before reading whole files.
+- Make edits with edit_file and verify with run_command.
+When the task is finished, reply with a brief summary and stop calling tools.`;
+
+/** The one tool the loop handles locally: the model's view of its own TodoWrite plan. */
+const UPDATE_PLAN_SPEC: ToolSpec = {
+  name: "update_plan",
+  description: "Replace your current plan. Provide the full list of steps each time you call it.",
+  parameters: {
+    type: "object",
+    properties: {
+      steps: {
+        type: "array",
+        description: "Ordered plan steps.",
+        items: {
+          type: "object",
+          properties: {
+            text: { type: "string" },
+            status: { type: "string", enum: ["pending", "active", "done"] },
+          },
+          required: ["text"],
+        },
+      },
+    },
+    required: ["steps"],
+  },
+};
+
+const UpdatePlanArgs = z.object({
+  steps: z.array(
+    z.object({ text: z.string().min(1), status: PlanSchema.element.shape.status.optional() }),
+  ),
+});
+
+/**
+ * Run one real turn: plan → act → observe → recover, driving the model through tool calls
+ * until it stops calling tools (done) or the safety cap trips. Streams activity + plan
+ * updates to the handlers and returns when the turn settles.
+ */
+export async function runAgentTurn(
+  prompt: string,
+  deps: AgentDeps,
+  signal?: AbortSignal,
+): Promise<void> {
+  const { model, tools, handlers } = deps;
+  const maxRounds = deps.maxRounds ?? 12;
+  handlers.onActivity("user", prompt);
+
+  const toolSpecs = [UPDATE_PLAN_SPEC, ...tools.specs];
+  const messages: ChatMessage[] = [
+    { role: "system", content: SYSTEM_PROMPT },
+    { role: "user", content: prompt },
+  ];
+
+  for (let round = 0; round < maxRounds; round++) {
+    if (signal?.aborted) throw new CancelledError();
+
+    const { message } = await model.chat({ messages, tools: toolSpecs, signal });
+    if (message.content.trim()) handlers.onActivity("system", message.content.trim());
+
+    // Record the assistant turn (with any tool calls) for the next round's context.
+    messages.push({
+      role: "assistant",
+      content: message.content,
+      tool_calls: message.toolCalls.map((tc) => ({
+        id: tc.id,
+        type: "function",
+        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+      })),
+    });
+
+    // No tool calls → the model considers the task done.
+    if (message.toolCalls.length === 0) return;
+
+    for (const call of message.toolCalls) {
+      if (signal?.aborted) throw new CancelledError();
+      let result: string;
+      if (call.name === "update_plan") {
+        result = applyUpdatePlan(call.arguments, handlers);
+      } else {
+        handlers.onActivity("tool", `${call.name} ${summarizeArgs(call.arguments)}`);
+        try {
+          result = truncate(await tools.call(call.name, call.arguments)).text;
+        } catch (e) {
+          result = `ERROR: ${(e as Error).message}`;
+        }
+      }
+      messages.push({ role: "tool", tool_call_id: call.id, content: result });
+    }
+  }
+
+  handlers.onActivity(
+    "error",
+    `stopped after ${maxRounds} tool rounds (safety cap — full ceilings arrive Day 8).`,
+  );
+}
+
+/** Apply an update_plan tool call to the plan pane; returns the tool result string. */
+function applyUpdatePlan(args: Record<string, unknown>, handlers: LoopHandlers): string {
+  const parsed = UpdatePlanArgs.safeParse(args);
+  if (!parsed.success) return "ERROR: invalid plan (need { steps: [{ text, status? }] }).";
+  const plan: Plan = parsed.data.steps.map((s, i) => ({
+    id: i + 1,
+    text: s.text,
+    status: s.status ?? "pending",
+  }));
+  handlers.onPlan(plan);
+  return `plan updated (${plan.length} steps)`;
+}
+
+/** A compact one-line preview of tool arguments for the activity pane. */
+function summarizeArgs(args: Record<string, unknown>): string {
+  const preview = Object.entries(args)
+    .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+    .join(" ");
+  return preview.length > 80 ? `${preview.slice(0, 77)}…` : preview;
 }
