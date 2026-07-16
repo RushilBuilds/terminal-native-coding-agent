@@ -1,10 +1,53 @@
-/** OpenAI/OpenRouter-compatible chat message shapes (kept minimal for Day 1). */
+/** OpenAI/OpenRouter-compatible chat message + tool-calling shapes. */
 
 export type Role = "system" | "user" | "assistant" | "tool";
+
+/** One tool call as emitted by the model (OpenAI function-calling wire shape). */
+export interface RawToolCall {
+  id: string;
+  type: "function";
+  function: { name: string; arguments: string };
+}
 
 export interface ChatMessage {
   role: Role;
   content: string;
+  /** Present on assistant messages that requested tool calls. */
+  tool_calls?: RawToolCall[];
+  /** Present on tool-result messages; ties the result to its call. */
+  tool_call_id?: string;
+}
+
+/** A tool advertised to the model: name, description, JSON-Schema parameters. */
+export interface ToolSpec {
+  name: string;
+  description: string;
+  parameters: Record<string, unknown>;
+}
+
+/** A decoded tool call the agent loop can dispatch. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  arguments: Record<string, unknown>;
+}
+
+export interface AssistantTurn {
+  content: string;
+  toolCalls: ToolCall[];
+}
+
+export interface ChatRequest {
+  messages: ChatMessage[];
+  tools?: ToolSpec[];
+  model?: string;
+  temperature?: number;
+  signal?: AbortSignal;
+}
+
+/** Minimal contract the agent loop depends on — easy to fake in tests. */
+export interface ModelClient {
+  chat(req: ChatRequest): Promise<{ message: AssistantTurn; usage?: Usage }>;
 }
 
 /** Token usage returned by the provider at the end of a stream. */

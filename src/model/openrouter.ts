@@ -1,5 +1,13 @@
 import type { AppConfig } from "../config/index.ts";
-import type { ChatOptions, StreamEvent, Usage } from "./types.ts";
+import type {
+  AssistantTurn,
+  ChatOptions,
+  ChatRequest,
+  ModelClient,
+  StreamEvent,
+  ToolCall,
+  Usage,
+} from "./types.ts";
 
 /**
  * Minimal OpenRouter client built on native fetch + SSE parsing — no SDK.
@@ -8,8 +16,56 @@ import type { ChatOptions, StreamEvent, Usage } from "./types.ts";
  * what the agent loop needs: a streaming chat call that yields text deltas and final usage.
  * Tool-calling, JSON mode, etc. get layered on in later days.
  */
-export class OpenRouterClient {
+export class OpenRouterClient implements ModelClient {
   constructor(private readonly config: AppConfig) {}
+
+  /**
+   * Non-streaming chat with tool-calling — the primitive the agent loop turns on. Sends the
+   * conversation + tool specs, and returns the assistant's text and any decoded tool calls.
+   */
+  async chat(req: ChatRequest): Promise<{ message: AssistantTurn; usage?: Usage }> {
+    const { openRouter, model } = this.config;
+    const body: Record<string, unknown> = {
+      model: req.model ?? model.id,
+      messages: req.messages,
+      temperature: req.temperature ?? 0.4,
+    };
+    if (req.tools?.length) {
+      body.tools = req.tools.map((t) => ({
+        type: "function",
+        function: { name: t.name, description: t.description, parameters: t.parameters },
+      }));
+    }
+
+    const res = await fetch(`${openRouter.baseUrl}/chat/completions`, {
+      method: "POST",
+      headers: this.headers(),
+      body: JSON.stringify(body),
+      signal: req.signal,
+    });
+    if (!res.ok) {
+      throw new ModelError(`OpenRouter request failed (${res.status} ${res.statusText})`, {
+        status: res.status,
+        detail: await safeText(res),
+      });
+    }
+
+    const json = (await res.json()) as ChatCompletion;
+    const choice = json.choices?.[0]?.message;
+    const toolCalls: ToolCall[] = (choice?.tool_calls ?? []).map((tc) => ({
+      id: tc.id,
+      name: tc.function.name,
+      arguments: parseArgs(tc.function.arguments),
+    }));
+    const usage = json.usage
+      ? {
+          promptTokens: json.usage.prompt_tokens ?? 0,
+          completionTokens: json.usage.completion_tokens ?? 0,
+          totalTokens: json.usage.total_tokens ?? 0,
+        }
+      : undefined;
+    return { message: { content: choice?.content ?? "", toolCalls }, usage };
+  }
 
   /**
    * Stream a chat completion as an async iterable of {@link StreamEvent}s.
@@ -163,6 +219,27 @@ interface OpenRouterChunk {
     completion_tokens?: number;
     total_tokens?: number;
   };
+}
+
+interface ChatCompletion {
+  choices?: Array<{
+    message?: {
+      content?: string;
+      tool_calls?: Array<{ id: string; function: { name: string; arguments: string } }>;
+    };
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+}
+
+/** Tool arguments arrive as a JSON string; decode defensively (never throw into the loop). */
+function parseArgs(raw: string): Record<string, unknown> {
+  if (!raw) return {};
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
 }
 
 /** Thrown when the provider returns a non-2xx response. */
