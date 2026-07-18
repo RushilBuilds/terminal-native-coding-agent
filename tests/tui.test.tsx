@@ -86,6 +86,55 @@ describe("App (TUI scaffold)", () => {
     expect(frame).toContain(crashed.id);
   });
 
+  test("routes /apply to the sandbox and shows the result", async () => {
+    const calls: string[] = [];
+    const sandbox = {
+      diff: async () => "diff --git a/x b/x",
+      apply: async () => {
+        calls.push("apply");
+        return "applied 1 file(s) to the working tree";
+      },
+      discard: async () => "discarded",
+    };
+    const { stdin, lastFrame } = render(
+      <App
+        modelLabel="Test Model"
+        ceilings={CEILINGS}
+        journal={journal}
+        runTurn={runStubTurn}
+        sandbox={sandbox}
+      />,
+    );
+    stdin.write("/apply");
+    await tick(5);
+    stdin.write("\r");
+    await tick(20);
+    expect(calls).toEqual(["apply"]);
+    expect(lastFrame() ?? "").toContain("applied 1 file(s)");
+  });
+
+  test("nudges to review when a turn leaves sandbox changes", async () => {
+    const sandbox = {
+      diff: async () => "diff --git a/x b/x\n+change",
+      apply: async () => "applied",
+      discard: async () => "discarded",
+    };
+    const { stdin, lastFrame } = render(
+      <App
+        modelLabel="Test Model"
+        ceilings={CEILINGS}
+        journal={journal}
+        runTurn={runStubTurn}
+        sandbox={sandbox}
+      />,
+    );
+    stdin.write("do something");
+    await tick(5);
+    stdin.write("\r");
+    await tick(1200);
+    expect(lastFrame() ?? "").toContain("sandbox has changes");
+  });
+
   test("backspace edits the prompt buffer", async () => {
     const { stdin, lastFrame } = render(
       <App modelLabel="Test Model" ceilings={CEILINGS} journal={journal} runTurn={runStubTurn} />,

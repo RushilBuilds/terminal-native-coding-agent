@@ -5,6 +5,7 @@ import { type AppConfig, loadConfig } from "../config/index.ts";
 import { McpToolClient } from "../mcp/client.ts";
 import { type RunningMcpServer, startMcpHttpServer } from "../mcp/server.ts";
 import { OpenRouterClient } from "../model/openrouter.ts";
+import { type SandboxControls, WorktreeSandbox } from "../sandbox/index.ts";
 import { App } from "./App.tsx";
 import type { Ceilings } from "./panes/BudgetPane.tsx";
 
@@ -31,7 +32,7 @@ export async function startTui(): Promise<void> {
   const journal = new SessionJournal();
   const initialSession = journal.latestResumable();
 
-  const { runTurn, modelLabel, dispose } = await buildRunner(config);
+  const { runTurn, modelLabel, sandbox, dispose } = await buildRunner(config);
 
   const { waitUntilExit } = render(
     <App
@@ -39,6 +40,7 @@ export async function startTui(): Promise<void> {
       ceilings={config?.ceilings ?? DEFAULT_CEILINGS}
       journal={journal}
       runTurn={runTurn}
+      sandbox={sandbox}
       initialSession={initialSession}
     />,
     { exitOnCtrlC: false },
@@ -50,6 +52,7 @@ export async function startTui(): Promise<void> {
 interface Runner {
   runTurn: TurnRunner;
   modelLabel: string;
+  sandbox?: SandboxControls;
   dispose: () => Promise<void>;
 }
 
@@ -61,8 +64,18 @@ async function buildRunner(config: AppConfig | undefined): Promise<Runner> {
 
   let server: RunningMcpServer | undefined;
   let client: McpToolClient | undefined;
+  let sandbox: WorktreeSandbox | undefined;
   try {
-    server = await startMcpHttpServer({ cwd: process.cwd() });
+    // Work in an isolated worktree when the cwd is a git repo; otherwise fall back to cwd.
+    let cwd = process.cwd();
+    try {
+      sandbox = await WorktreeSandbox.create(process.cwd());
+      cwd = sandbox.root;
+    } catch {
+      sandbox = undefined;
+    }
+
+    server = await startMcpHttpServer({ cwd });
     client = new McpToolClient(server.url);
     await client.connect();
     const remote = await client.listTools();
@@ -83,16 +96,19 @@ async function buildRunner(config: AppConfig | undefined): Promise<Runner> {
 
     return {
       runTurn,
-      modelLabel: config.model.label,
+      modelLabel: sandbox ? config.model.label : `${config.model.label} (no sandbox)`,
+      sandbox,
       dispose: async () => {
         await client?.close();
         await server?.close();
+        await sandbox?.dispose();
       },
     };
   } catch (err) {
     // If the tool server fails to come up, degrade to the stub rather than crash the TUI.
     await client?.close();
     await server?.close();
+    await sandbox?.dispose();
     const message = err instanceof Error ? err.message : String(err);
     const runTurn: TurnRunner = async (_prompt, handlers) => {
       handlers.onActivity("error", `tool server unavailable: ${message}`);

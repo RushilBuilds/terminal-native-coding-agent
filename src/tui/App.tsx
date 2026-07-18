@@ -10,6 +10,8 @@ import {
   type Plan,
   type TurnRunner,
 } from "../agent/loop.ts";
+import type { SandboxControls } from "../sandbox/index.ts";
+import { truncate } from "../tools/truncate.ts";
 import { PromptInput } from "./PromptInput.tsx";
 import { ActivityPane } from "./panes/ActivityPane.tsx";
 import { BudgetPane, type Ceilings } from "./panes/BudgetPane.tsx";
@@ -21,6 +23,8 @@ export interface AppProps {
   journal: SessionJournal;
   /** Runs one turn — the real model+MCP loop when configured, else the offline stub. */
   runTurn: TurnRunner;
+  /** Sandbox review controls (present when the agent works in an isolated worktree). */
+  sandbox?: SandboxControls;
   /** A crashed-and-recovered session to restore on launch, if any. */
   initialSession?: Session | null;
 }
@@ -32,7 +36,7 @@ export interface AppProps {
  * persisted, and completion/exit marks it done. A session recovered from a crash restores
  * its plan on launch (Day 3). The real loop swaps in behind this same interface on Day 4.
  */
-export function App({ modelLabel, ceilings, journal, runTurn, initialSession }: AppProps) {
+export function App({ modelLabel, ceilings, journal, runTurn, sandbox, initialSession }: AppProps) {
   const { exit } = useApp();
   const [text, setText] = useState("");
   const [activity, setActivity] = useState<ActivityEntry[]>([]);
@@ -56,10 +60,57 @@ export function App({ modelLabel, ceilings, journal, runTurn, initialSession }: 
     }
   }, [initialSession, pushActivity]);
 
+  // Nudge the user to review the worktree after a turn leaves changes behind.
+  const reviewIfChanges = useCallback(async () => {
+    if (!sandbox) return;
+    const d = await sandbox.diff();
+    if (d.trim()) {
+      pushActivity(
+        "system",
+        "sandbox has changes — /diff to review · /apply to accept · /discard to drop",
+      );
+    }
+  }, [sandbox, pushActivity]);
+
+  // Handle sandbox review commands typed at the prompt (/diff, /apply, /discard).
+  const handleCommand = useCallback(
+    (cmd: string) => {
+      if (!sandbox) {
+        pushActivity("error", "no sandbox active (needs a git repo + configured model).");
+        return;
+      }
+      setRunning(true);
+      const run =
+        cmd === "/diff"
+          ? sandbox
+              .diff()
+              .then((d) =>
+                d.trim() ? truncate(d, { maxChars: 4000 }).text : "no changes in sandbox.",
+              )
+          : cmd === "/apply"
+            ? sandbox.apply()
+            : cmd === "/discard"
+              ? sandbox.discard()
+              : Promise.resolve(`unknown command: ${cmd} (try /diff, /apply, /discard)`);
+      run
+        .then((out) => {
+          pushActivity("system", out);
+          if (cmd === "/apply" || cmd === "/discard") setPlan([]);
+        })
+        .catch((e) => pushActivity("error", e instanceof Error ? e.message : String(e)))
+        .finally(() => setRunning(false));
+    },
+    [sandbox, pushActivity],
+  );
+
   const submit = useCallback(() => {
     const prompt = text.trim();
     if (!prompt || running) return;
     setText("");
+    if (prompt.startsWith("/")) {
+      handleCommand(prompt);
+      return;
+    }
     setResumedFrom(null);
 
     // Close out any recovered session we were just viewing, then open a fresh one.
@@ -88,8 +139,9 @@ export function App({ modelLabel, ceilings, journal, runTurn, initialSession }: 
         if (sessionRef.current) sessionRef.current = journal.complete(sessionRef.current);
         setRunning(false);
         abortRef.current = null;
+        void reviewIfChanges();
       });
-  }, [text, running, pushActivity, journal, runTurn]);
+  }, [text, running, pushActivity, journal, runTurn, handleCommand, reviewIfChanges]);
 
   useInput((input, key) => {
     // Ctrl-C: cancel an in-flight turn, or exit when idle.
@@ -143,7 +195,10 @@ export function App({ modelLabel, ceilings, journal, runTurn, initialSession }: 
 
       <PromptInput text={text} running={running} />
       <Box paddingX={1}>
-        <Text dimColor>⏎ submit · ctrl-c {running ? "cancel" : "exit"}</Text>
+        <Text dimColor>
+          ⏎ submit · ctrl-c {running ? "cancel" : "exit"}
+          {sandbox ? " · /diff /apply /discard" : ""}
+        </Text>
       </Box>
     </Box>
   );
