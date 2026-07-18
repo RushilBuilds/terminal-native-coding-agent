@@ -119,6 +119,21 @@ and dispatched by the model in the act→observe loop. Every tool result passes 
 Paths are contained to the working directory, and the model manages its own plan via an
 `update_plan` control tool. When no API key is set, the TUI runs an offline stub so it still works.
 
+## Sandbox
+
+When the working directory is a git repo, the agent doesn't touch it directly. It runs in an
+isolated **git worktree** checked out at `HEAD` (under `.agent/worktrees/`, gitignored), so all
+edits and commands are contained. After a turn leaves changes, review and decide from the prompt:
+
+| Command | Effect |
+| --- | --- |
+| `/diff` | Show the sandbox's changes vs the base commit. |
+| `/apply` | Land the changes onto your real working tree. |
+| `/discard` | Throw the sandbox changes away. |
+
+The `Sandbox` interface ([`src/sandbox`](src/sandbox/)) keeps this pluggable — a cloud adapter
+(E2B/Daytona) is a documented drop-in. See [ADR 0001](docs/adr/0001-sandbox.md).
+
 ## Development
 
 ```bash
@@ -136,7 +151,7 @@ Built one phase per day. Checked = landed.
 - [x] **Day 2 — TUI scaffold:** Ink split-view (plan / activity / budget) + prompt input & Ctrl-C cancellation.
 - [x] **Day 3 — Plan state:** zod-typed TodoWrite state, journaled to `.agent/session-*.json`, restored on restart after a crash.
 - [x] **Day 4 — Tools over MCP:** six core tools on an MCP StreamableHTTP server, real model tool-calling in the act→observe loop, aggressive output truncation.
-- [ ] **Day 5 — Sandbox:** git-worktree isolation for edits & execution.
+- [x] **Day 5 — Sandbox:** git-worktree isolation — the agent edits/runs in an isolated worktree; review with `/diff`, accept with `/apply`, drop with `/discard`.
 - [ ] **Day 6 — Hooks:** lifecycle hooks + safety policies.
 - [ ] **Day 7 — Observability:** OTel GenAI spans + live token/cost accounting.
 - [ ] **Day 8 — Cost control:** three-layer ceilings + recovery hardening.
