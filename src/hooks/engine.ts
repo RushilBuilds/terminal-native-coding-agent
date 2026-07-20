@@ -29,12 +29,12 @@ export type PreDecision =
 
 export interface Hook {
   name: string;
-  preToolUse?(call: ToolCall): PreDecision | undefined | Promise<PreDecision | undefined>;
+  preToolUse?(call: ToolCall): PreDecision | void | Promise<PreDecision | void>;
   /** Return a transformed result string, or void to leave it unchanged. */
-  postToolUse?(outcome: ToolOutcome): string | undefined | Promise<string | undefined>;
+  postToolUse?(outcome: ToolOutcome): string | void | Promise<string | void>;
   /** Return a message to surface in the UI, or void. */
-  sessionStart?(info: SessionInfo): string | undefined | Promise<string | undefined>;
-  sessionEnd?(info: SessionInfo): string | undefined | Promise<string | undefined>;
+  sessionStart?(info: SessionInfo): string | void | Promise<string | void>;
+  sessionEnd?(info: SessionInfo): string | void | Promise<string | void>;
 }
 
 export interface PreToolUseOutcome {
@@ -80,7 +80,7 @@ export class HookEngine {
   }
 
   private async collect(
-    run: (hook: Hook) => string | undefined | Promise<string | undefined>,
+    run: (hook: Hook) => string | void | Promise<string | void>,
   ): Promise<string[]> {
     const messages: string[] = [];
     for (const hook of this.hooks) {

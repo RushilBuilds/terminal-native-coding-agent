@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { type ActivityKind, type AgentDeps, type Plan, runAgentTurn } from "../src/agent/loop.ts";
+import { dangerousCommands } from "../src/hooks/builtins/dangerous-commands.ts";
+import { redactSecrets } from "../src/hooks/builtins/redact-secrets.ts";
+import { HookEngine } from "../src/hooks/engine.ts";
 import type { AssistantTurn, ChatRequest, ModelClient } from "../src/model/types.ts";
 
 /** A scripted model: returns each queued turn in order, recording the requests it saw. */
@@ -88,6 +91,52 @@ describe("runAgentTurn", () => {
     expect(last?.map((t) => t.text)).toEqual(["look", "fix"]);
     expect(last?.[0]?.status).toBe("active");
     expect(last?.[1]?.status).toBe("pending"); // defaulted
+  });
+
+  test("a PreToolUse hook can block a tool call before it runs", async () => {
+    const model = new FakeModel([
+      {
+        content: "",
+        toolCalls: [{ id: "d1", name: "run_command", arguments: { command: "rm -rf /" } }],
+      },
+      { content: "understood, won't do that", toolCalls: [] },
+    ]);
+    let toolRan = false;
+    const { activity, deps } = harness(model, async () => {
+      toolRan = true;
+      return "should not happen";
+    });
+    deps.hooks = new HookEngine([dangerousCommands]);
+
+    await runAgentTurn("nuke everything", deps);
+
+    expect(toolRan).toBe(false); // the tool never executed
+    expect(activity.some((a) => a.kind === "error" && a.text.includes("BLOCKED"))).toBe(true);
+  });
+
+  test("a PostToolUse hook transforms the observation", async () => {
+    const model = new FakeModel([
+      {
+        content: "",
+        toolCalls: [{ id: "r1", name: "read_file", arguments: { path: ".env" } }],
+      },
+      { content: "done", toolCalls: [] },
+    ]);
+    const seen: string[] = [];
+    const model2 = {
+      async chat(req: ChatRequest) {
+        const last = req.messages.at(-1);
+        if (last?.role === "tool") seen.push(last.content);
+        return { message: await model.chat(req).then((r) => r.message) };
+      },
+    };
+    const { deps } = harness(model2, async () => "token: supersecretvalue123");
+    deps.hooks = new HookEngine([redactSecrets]);
+
+    await runAgentTurn("read env", deps);
+    // The secret was redacted before the model ever saw the tool result.
+    expect(seen.some((s) => s.includes("[REDACTED]"))).toBe(true);
+    expect(seen.some((s) => s.includes("supersecretvalue123"))).toBe(false);
   });
 
   test("stops at the safety cap when the model never stops calling tools", async () => {

@@ -7,6 +7,7 @@
  * API key configured, so the TUI still works and demos.
  */
 import { z } from "zod";
+import type { HookEngine } from "../hooks/engine.ts";
 import type { ChatMessage, ModelClient, ToolSpec } from "../model/types.ts";
 import { truncate } from "../tools/truncate.ts";
 import { type Plan, PlanSchema, createPlan, withStatus } from "./plan.ts";
@@ -117,6 +118,8 @@ export interface AgentDeps {
   model: ModelClient;
   tools: AgentTools;
   handlers: LoopHandlers;
+  /** Safety + policy hooks that wrap every tool call. */
+  hooks?: HookEngine;
   /** Safety cap on tool-calling rounds (full turn/token/$ ceilings arrive Day 8). */
   maxRounds?: number;
 }
@@ -168,7 +171,7 @@ export async function runAgentTurn(
   deps: AgentDeps,
   signal?: AbortSignal,
 ): Promise<void> {
-  const { model, tools, handlers } = deps;
+  const { model, tools, handlers, hooks } = deps;
   const maxRounds = deps.maxRounds ?? 12;
   handlers.onActivity("user", prompt);
 
@@ -178,47 +181,78 @@ export async function runAgentTurn(
     { role: "user", content: prompt },
   ];
 
-  for (let round = 0; round < maxRounds; round++) {
-    if (signal?.aborted) throw new CancelledError();
-
-    const { message } = await model.chat({ messages, tools: toolSpecs, signal });
-    if (message.content.trim()) handlers.onActivity("system", message.content.trim());
-
-    // Record the assistant turn (with any tool calls) for the next round's context.
-    messages.push({
-      role: "assistant",
-      content: message.content,
-      tool_calls: message.toolCalls.map((tc) => ({
-        id: tc.id,
-        type: "function",
-        function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
-      })),
-    });
-
-    // No tool calls → the model considers the task done.
-    if (message.toolCalls.length === 0) return;
-
-    for (const call of message.toolCalls) {
-      if (signal?.aborted) throw new CancelledError();
-      let result: string;
-      if (call.name === "update_plan") {
-        result = applyUpdatePlan(call.arguments, handlers);
-      } else {
-        handlers.onActivity("tool", `${call.name} ${summarizeArgs(call.arguments)}`);
-        try {
-          result = truncate(await tools.call(call.name, call.arguments)).text;
-        } catch (e) {
-          result = `ERROR: ${(e as Error).message}`;
-        }
-      }
-      messages.push({ role: "tool", tool_call_id: call.id, content: result });
-    }
+  for (const msg of await (hooks?.sessionStart({ task: prompt }) ?? [])) {
+    handlers.onActivity("system", msg);
   }
 
-  handlers.onActivity(
-    "error",
-    `stopped after ${maxRounds} tool rounds (safety cap — full ceilings arrive Day 8).`,
-  );
+  try {
+    for (let round = 0; round < maxRounds; round++) {
+      if (signal?.aborted) throw new CancelledError();
+
+      const { message } = await model.chat({ messages, tools: toolSpecs, signal });
+      if (message.content.trim()) handlers.onActivity("system", message.content.trim());
+
+      // Record the assistant turn (with any tool calls) for the next round's context.
+      messages.push({
+        role: "assistant",
+        content: message.content,
+        tool_calls: message.toolCalls.map((tc) => ({
+          id: tc.id,
+          type: "function",
+          function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+        })),
+      });
+
+      // No tool calls → the model considers the task done.
+      if (message.toolCalls.length === 0) return;
+
+      for (const call of message.toolCalls) {
+        if (signal?.aborted) throw new CancelledError();
+        messages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: await dispatch(call.name, call.arguments, deps),
+        });
+      }
+    }
+
+    handlers.onActivity(
+      "error",
+      `stopped after ${maxRounds} tool rounds (safety cap — full ceilings arrive Day 8).`,
+    );
+  } finally {
+    for (const msg of await (hooks?.sessionEnd({ task: prompt }) ?? [])) {
+      handlers.onActivity("system", msg);
+    }
+  }
+}
+
+/** Run one tool call: update_plan locally, everything else through hooks → tool → hooks. */
+async function dispatch(
+  name: string,
+  args: Record<string, unknown>,
+  deps: AgentDeps,
+): Promise<string> {
+  const { tools, handlers, hooks } = deps;
+  if (name === "update_plan") return applyUpdatePlan(args, handlers);
+
+  // PreToolUse: a hook may deny the call or rewrite its arguments.
+  const pre = hooks ? await hooks.preToolUse(name, args) : { args };
+  if ("blocked" in pre && pre.blocked) {
+    const msg = `BLOCKED by ${pre.blocked.hook}: ${pre.blocked.reason}`;
+    handlers.onActivity("error", msg);
+    return msg;
+  }
+
+  handlers.onActivity("tool", `${name} ${summarizeArgs(pre.args)}`);
+  let result: string;
+  try {
+    result = truncate(await tools.call(name, pre.args)).text;
+  } catch (e) {
+    result = `ERROR: ${(e as Error).message}`;
+  }
+  // PostToolUse: transform the observation (e.g. redact secrets) before it re-enters context.
+  return hooks ? await hooks.postToolUse(name, pre.args, result) : result;
 }
 
 /** Apply an update_plan tool call to the plan pane; returns the tool result string. */
