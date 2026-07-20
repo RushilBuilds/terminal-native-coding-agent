@@ -134,6 +134,23 @@ edits and commands are contained. After a turn leaves changes, review and decide
 The `Sandbox` interface ([`src/sandbox`](src/sandbox/)) keeps this pluggable — a cloud adapter
 (E2B/Daytona) is a documented drop-in. See [ADR 0001](docs/adr/0001-sandbox.md).
 
+## Hooks
+
+Every tool call is wrapped by a lifecycle hook engine ([`src/hooks`](src/hooks/)) with four
+events — `PreToolUse`, `PostToolUse`, `SessionStart`, `SessionEnd`. `PreToolUse` hooks can
+allow, rewrite arguments, or **deny** a call (first deny wins); `PostToolUse` hooks chain
+transforms over the result. The default policy set (`DEFAULT_HOOKS`) ships:
+
+| Policy | Event | What it enforces |
+| --- | --- | --- |
+| `dangerous-commands` | Pre | Denies `rm -rf /`, `sudo`, fork bombs, disk writes, … |
+| `protect-remote` | Pre | Blocks `git push` (tool or shell) — no surprise remote writes. |
+| `protect-sensitive-files` | Pre | Refuses edits to `.env`, keys, `.git/`, credentials. |
+| `redact-secrets` | Post | Strips API keys/tokens/private keys from tool output. |
+| `audit-log` | Session/Post | Append-only trail of every call to `.agent/audit.log`. |
+
+Add or remove policies by editing the `DEFAULT_HOOKS` array — that's the hooks config.
+
 ## Development
 
 ```bash
@@ -152,7 +169,7 @@ Built one phase per day. Checked = landed.
 - [x] **Day 3 — Plan state:** zod-typed TodoWrite state, journaled to `.agent/session-*.json`, restored on restart after a crash.
 - [x] **Day 4 — Tools over MCP:** six core tools on an MCP StreamableHTTP server, real model tool-calling in the act→observe loop, aggressive output truncation.
 - [x] **Day 5 — Sandbox:** git-worktree isolation — the agent edits/runs in an isolated worktree; review with `/diff`, accept with `/apply`, drop with `/discard`.
-- [ ] **Day 6 — Hooks:** lifecycle hooks + safety policies.
+- [x] **Day 6 — Hooks:** PreToolUse / PostToolUse / SessionStart / SessionEnd engine + five safety policies.
 - [ ] **Day 7 — Observability:** OTel GenAI spans + live token/cost accounting.
 - [ ] **Day 8 — Cost control:** three-layer ceilings + recovery hardening.
 - [ ] **Day 9 — Eval & PR:** 30-task eval vs baseline + auto-open GitHub PR.
