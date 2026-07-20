@@ -2,6 +2,7 @@ import { render } from "ink";
 import { SessionJournal } from "../agent/journal.ts";
 import { type TurnRunner, runAgentTurn, runStubTurn } from "../agent/loop.ts";
 import { type AppConfig, loadConfig } from "../config/index.ts";
+import { defaultHookEngine } from "../hooks/index.ts";
 import { McpToolClient } from "../mcp/client.ts";
 import { type RunningMcpServer, startMcpHttpServer } from "../mcp/server.ts";
 import { OpenRouterClient } from "../model/openrouter.ts";
@@ -86,11 +87,12 @@ async function buildRunner(config: AppConfig | undefined): Promise<Runner> {
     }));
     const model = new OpenRouterClient(config);
     const connectedClient = client;
+    const hooks = defaultHookEngine();
 
     const runTurn: TurnRunner = (prompt, handlers, signal) =>
       runAgentTurn(
         prompt,
-        { model, tools: { specs, call: (n, a) => connectedClient.call(n, a) }, handlers },
+        { model, tools: { specs, call: (n, a) => connectedClient.call(n, a) }, hooks, handlers },
         signal,
       );
 
